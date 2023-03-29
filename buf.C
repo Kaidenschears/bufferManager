@@ -73,38 +73,37 @@ the hash table.
 */
 const Status BufMgr::allocBuf(int & frame) 
 {
+    Status status;
     // Cycles through the buffer twice
     for(int x=0 ;x < (numBufs*2); x++){
-        //need to look at this again using logic from graphic of clock algorithm 
-        if( bufTable[bufMgr->clockHand].valid == false && 
-            bufTable[bufMgr->clockHand].refbit== false && 
-            bufTable[bufMgr->clockHand].pinCnt == 0
-            )
-            {
-                frame= bufMgr->clockHand; 
-                return OK;
-            }
-        else if( bufTable[bufMgr->clockHand].valid == true && 
-            bufTable[bufMgr->clockHand].refbit== false && 
-            bufTable[bufMgr->clockHand].pinCnt == 0
-            )
+        int frameNo=bufMgr->clockHand;
+        //Use frame if not valid
+        if( bufTable[bufMgr->clockHand].valid == false)
+        {
+            frame = frameNo; 
+            return OK;
+        }
+        //Clear refbit and advance clock if rebit is true
+        else if(bufTable[bufMgr->clockHand].refbit== true ){
+            bufTable[bufMgr->clockHand].refbit=false;
+        }
+        //Advance clock if page is pinned
+        else if(bufTable[bufMgr->clockHand].pinCnt == 0)
         {
 
             File *temp_file = bufTable[bufMgr->clockHand].file;
             int temp_pageNo = bufTable[bufMgr->clockHand].pageNo;
-            int frameNo=bufMgr->clockHand;
-
-            /
+            
             // flush dirty page 
             if (bufTable[frameNo].dirty)
             {
-                if (temp_file->writePage(temp_pageNo, &bufPool[frameNo]) == UNIXERR)
+                //returns a UNIXERR error is there is an I/O error.
+                if (temp_file->writePage(temp_pageNo, &bufPool[frameNo]) !=OK)
                     return UNIXERR;
             }
+
             // delete page from hashtable and then from bufpool
-            bufMgr->disposePage(temp_file, temp_pageNo); // wrong i think because it disposes (deletes) page within the file
-            //instead i propose
-             status = hashTable->lookup(temp_file, temp_pageNo, frameNo);
+            status = hashTable->lookup(temp_file, temp_pageNo, frameNo);
             if (status == OK)
             {
                 // clear the page
@@ -113,7 +112,7 @@ const Status BufMgr::allocBuf(int & frame)
             status = hashTable->remove(temp_file, temp_pageNo);
            
            
-            frame= bufMgr->clockHand; 
+            frame= frameNo; 
             
             return OK;
         }
@@ -145,7 +144,37 @@ frames are pinned, HASHTBLERROR if a hash table error occurred.
 */
 const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 {
+    int frameNo;
+    Status status = hashTable->lookup(file, PageNo, frameNo); //frameNo here represents the frameNo of the page we are looking for
+        if (status != OK) // Case 1 page is not in buffer pool
+        {
+            
+            //Use allocBuff to allocate a frame
+            if((status=allocBuf(frameNo)) == OK){ // frameNo here represents the free frame in bufPool that we will replace
+                
+                //Get page from database file
+                if((status=file->readPage(PageNo, &bufPool[frameNo])) != OK){
+                    return status;
+                }
+                //Place page and frame into hashtable
+                if((status=hashTable->insert(file,PageNo,frameNo))!=OK){
+                    return status;
+                }
+                bufTable[frameNo].Set(file,PageNo);
+                page=&bufPool[frameNo];
+                return OK;
+            }
+            return status;
+            
+        }
+        else // Case 2 page is in buffer pool
+        { 
+            bufTable[frameNo].refbit=true;
+            bufTable[frameNo].pinCnt++;
+            page=&bufPool[frameNo];
+            return OK;
 
+        }
 
 
 
@@ -198,13 +227,22 @@ occurred.
 */
 const Status BufMgr::allocPage(File* file, int& pageNo, Page*& page) 
 {
-
-
-
-
-
-
-
+    int frameNo;
+    Status status;
+    if((status=file->allocatePage(pageNo)) != OK){
+        return status;
+    }
+    if((status=allocBuf(frameNo)) != OK){
+        return status;
+    }
+    //cout<<frameNo;
+    //Place page and frame into hashtable
+    if((hashTable->insert(file, pageNo, frameNo))!=OK){
+        return HASHTBLERROR;
+    }
+    bufTable[frameNo].Set(file, pageNo);
+    page=&bufPool[frameNo];
+    return OK;
 }
 
 const Status BufMgr::disposePage(File* file, const int pageNo) 
